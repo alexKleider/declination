@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!./venv/bin/python3
 # -*- coding: utf-8 -*-
 # vim: set file encoding=utf-8 :
 #
@@ -20,134 +20,124 @@
 #   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #   Look for file named COPYING.
 """
-declination.py
 
 Usage:
-  declination.py -h | --version
-  declination.py -i INPUT -o OUTPUT
+    declination.py -h | --version
+    declination.py [options]
 
 Options:
-  -h --help  Print this docstring.
-  --version  Provide version.
-  -i INPUT --input=INPUT  Provide input file INPUT.
-  -o OUTPUT --output=OUTPUT Send output to OUTPUT.
+    -h --help  Print usage statement.
+    --version  Print version.
+    -i INFILE --infile=INFILE   Input file
+    -o OUTFILE --outfile=OUTFILE   Output file
 
-Input must consist of individual lines consisting of
-whitespace separated fields as follows:
-4_digit_year month date lat_\N{Degree sign} lat_' long_\N{Degree sign} long_' grid_offset
-The first three fields must be integers.
-The next three fields will be interpreted as floats.
-Fewer than six fields will result in an error; more will be ignored.
-Any line beginning with a '#' will be put back into the output
-but will otherwise be ignored.
-North Latitude and West Longitude are positive, 
-NOTE that with regard to Longitude this is against convention.
-This script will NOT work for areas in the Eastern or Southern
-hemispheres.  (It could easily be modified to do so: contact the author
-if interested: alex at kleider dot ca)
-
-Declination is returned in the last two fields expressed as decimal degrees
-first relative to True North, then relative to Grid North.
-A negative indicates East, positive West. ("East is least, West is best.")
+This is being done in a virtual environment with Python 3.
+Non standard libraries used: 'docopt' and 'requests':
+see accompanying file 'requirements.txt'.
+Thanks to Aaron Borden who helped me with the HTTP part. 
 """
-
-# import standard library modules
+# import library modules
 import sys
-import shlex
-import subprocess
-# import custom modules
-import docopt
+from docopt import docopt
+import requests
 # metadata such as version number
 VERSION = "0.0.0"
 # other constants
 COMMENT_INDICATOR = '#'
-n_FIELDS = 8
-COMMAND_by_AARON = (' '.join((
-"curl -d lat1={0[lat1]} -d lon1={0[lon1]} -d lat1Hemisphere=N -d",
-"lon1Hemisphere=W -d ajaz=true -d resultFormat=csv -d",
-"startYear={0[year]} -d startDay={0[day]} -d startMonth={0[month]}",
-"http://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination"
-)))
-
+SITE = (  # If this changes, line_array2dict() 
+          # will likely need to be changed.
+"http://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination")
 # global variables
+n_FIELDS = 8  # With 7 fields, could get the declination.
+              # The 8th field provides grid North offset
+              # which is needed to calculate declination re grid.
+test_line = (
+"2015 08 28  63 375  96 15  -2.46")
+
 # custom exception types
 # private functions and classes
 # public functions and classes
 
-def get_options():
-    return docopt.docopt(__doc__, version=VERSION)
+def line2array(line):
+    """Takes a line of input and tries to return a dictionary.
+    Returns None if line is a comment line.
+    Returns an error string if format can not be interpreted.
+    """
+    stripped_line = line.strip()
+    if stripped_line:
+        if stripped_line[0] == COMMENT_INDICATOR:
+            return
+        parts = stripped_line.split()
+        if len(parts) < n_FIELDS:
+            return 'Error: Bad input line.'
+        return parts
 
-def get_request_dict(line_array):
-     """Parameter is an array of items from an input line.
-     Returns an appropriate dictionary."""
-     return dict(
-         lat_d = line_array[3],
-         lat_m = line_array[4],
-         lat1 = float(line_array[3]) + float(line_array[4])/60,
-         lon_d = line_array[5],
-         lon_m = line_array[6],
-         lon1 = float(line_array[5]) + float(line_array[6])/60,
-         year = line_array[0],
-         day = line_array[2],
-         month = line_array[1],
-         grid_offset = float(line_array[7]),
-          )
+def line_array2dict(line_array):
+    """Parameter is an array of items from an input line.
+    If successful, returns a dictionary containing keys needed by the
+    request to be sent to SITE as well as those needed to format the
+    output, otherwise returns an error string.
+    The parameter is expected to be generated from an input
+    line by the client function (line2dict.)"""
+    try:
+        ret = dict(
+             lat_d = line_array[3],  # Latitude degrees
+             lat_m = line_array[4],  # Latitude minutes
+             lon_d = line_array[5],  # Longitude degrees
+             lon_m = line_array[6],  # Longitude minutes
+             grid_offset = float(line_array[7]),
+             # The following are used to format the http request.
+             lat1 = float(line_array[3]) + float(line_array[4])/60,
+             lon1 = float(line_array[5]) + float(line_array[6])/60,
+             lat1Hemisphere='N',
+             lon1Hemisphere='W',
+             ajaz='true',
+             resultFormat='csv',
+             startYear = line_array[0],
+             startDay = line_array[2],
+             startMonth = line_array[1],
+             grid='on'
+              )
+    except ValueError:
+        return (
+    'Error: Probably could not convert degrees &/or minutes into float.')
+    return ret
 
-def get_response_dict(response):            
-    """<response> is an array created by spliting the relevant
+def response_array2dict(response_array):            
+    """<response_array> is an array created by spliting the relevant
     line of output coming from the website.
     Returns a suitable dictionary."""
     return dict(   
-            decimal_year=float(response[0]),
-            latitude=float(response[1]),
-            longitude=-float(response[2]),  # East is least, ...
-#           elevation=float(response[3]),
-            declination=float(response[4]),
-#           decl_sv=float(response[5]),
-#           decl_uncertainty=float(response[6]),
+            decimal_year=float(response_array[0]),
+            latitude=float(response_array[1]),
+            longitude=-float(response_array[2]),  # East is least, ...
+            elevation=float(response_array[3]),
+            declination=float(response_array[4]),
+            decl_sv=float(response_array[5]),
+            decl_uncertainty=float(response_array[6]),
             )
 
-def get_decl(request_dict):
-    """Parameter is a dict of the form returned by get_request_dict.
-    Return value is provied by get_response_dict after it is provided an
-    array version of the relevant line of the response obtained by the
-    web site.
-    (The relevant data collected from the net is in a line of the form:
-    "[2015.54795, 61.1, -101.1, 0.0, 5.52539, -0.10319, 0.68124]"
-    b'#   7 Fields:'
-    b'#     (1) Date in decimal years'
-    b'#     (2) Latitude in decimal Degrees'
-    b'#     (3) Longitude in decimal Degrees'
-    b'#     (4) Elevation in km GPS'
-    b'#     (5) Declination in decimal Degrees'
-    b'#     (6) Declination_sv in decimal Degrees'
-    b'#     (7) Declination_uncertainty in decimal Degrees'
-    """
-    cmd = shlex.split(COMMAND_by_AARON.format(request_dict))
-    try:
-        output = subprocess.check_output(cmd)
-    except CalledProcessError as err:
-        print("ERROR: return code is {}, \n   Output: {}"
-                .format(err.returncode, err.output))
-    b_lines = output.split(b'\n')
-    data_line = b_lines[-2]
-    data = data_line.split(b',')
-    return get_response_dict(data)
+def response2dict(response):
+    lines = response.split('\n')
+    data_line = lines[-2]
+    data = data_line.split(',')
+    return response_array2dict(data)
 
-def format_output(in_dict, out_dict):
+def processed_line(in_dict, out_dict):
     """Desired output is of the form:
 2015 08 01  64 12  95 45  2.02 | 2015.xxx  64.xx 95.xx  x.xx | x.xx
-year mo day 
-    Lat degree/min
-        Long degree/min
-                   grid offset | Decimal yr
-                                decimal latitude
-                                      decimal longitude
-                                                  declination
+ ^    ^  ^   ^  ^   ^  ^   ^      ^         ^     ^       ^      ^
+year mo day  ^  ^   ^  ^   ^      ^         ^     ^       ^      ^
+    Lat degree/min  ^  ^   ^      ^         ^     ^       ^      ^
+        Long degree/min    ^      ^         ^     ^       ^      ^
+                   grid offset | Decimal yr ^     ^       ^      ^
+                                decimal latitude  ^       ^      ^
+                                      decimal longitude   ^      ^
+                                                  declination    ^
                                                     grid declination
 """
     return (' '.join((
-"{0[year]:<4}-{0[month]:0>2}-{0[day]:0>2}",
+"{0[startYear]:<4}-{0[startMonth]:0>2}-{0[startDay]:0>2}",
 "{0[lat_d]}\N{Degree sign} {0[lat_m]}\N{PRIME}",
 "{0[lon_d]}\N{Degree sign} {0[lon_m]}\N{PRIME}",
 "{0[grid_offset]:>6.3f} |",
@@ -157,36 +147,86 @@ year mo day
         .format(in_dict, out_dict,
                 out_dict['declination'] - in_dict['grid_offset']))
 
+def process_inputfile_object(input_file_object, output_array):
+    """First parameter is a file object which can be read.
+    The second param is a collector of ouput lines.
+    """
+    for line in input_file_object:
+        line_array = line2array(line)
+        if (line_array == None            # Comment line.
+        or isinstance(line_array, str)):  # Error report.
+            if line_array:              
+                output_array.append(
+                # Adding a line to announce the error report.
+                "#! The following line is malformed:")
+            output_array.append(line[:-1]) # Reported either way.
+        elif isinstance(line_array, list):
+            # Data to process
+            source_dict = line_array2dict(line_array)
+            retrieved_dict = get_response_dict(source_dict) 
+            output_line = processed_line(source_dict, retrieved_dict)
+            output_array.append(output_line)
+        else:
+            print("DEAD CODE BEING RUN!")
+            sys.exit(1)
+
+def get_response_dict(source_dict):
+    """Returns the web response in dictionary format.
+    Parameter is a dictionary created from an input line.
+    """
+    r = requests.get(SITE, params=source_dict)
+    return response2dict(r.text)
+
+def test():
+    line_array = line2array(test_line)
+    payload = line_array2dict(line_array)
+    if isinstance(payload, dict):
+        r = requests.get(SITE, params=payload)
+        print(r.url)
+        print(r.text)
+        print("Response is of type {}.".format(type(r.text)))
+        print(response2dict(r.text))
+    elif isinstance(payload,str):
+        # An error is being reported:
+        print(payload)
+    elif payload == None:
+        print("'payload' is a comment.")
+    else:
+        print("This should be dead code.")
+
+def get_output(args):
+    """Parameter is output of docopt's interpretation of the
+    commandline parameters.  Output is a single string.
+    This function reads from the input file, gets declination
+    from the web and then generates the output.
+    """
+    output_array = []
+    if args["--infile"]:
+        with open(args['--infile'], 'r') as infile:
+            process_inputfile_object(infile, output_array)
+    else:
+        with sys.stdin as infile:
+            process_inputfile_object(infile, output_array)
+    return '\n'.join(output_array)
+
 # main function
 def main():
-    args = get_options()
-    output = []
-    with open(args['--input'], 'r') as infile:
-        for line in infile:
-            stripped_line = line.strip()
-            if stripped_line:
-                if stripped_line[0] == COMMENT_INDICATOR:
-                    output.append(line[:-1])
-                    continue
-                parts = stripped_line.split()
-                if len(parts) < n_FIELDS:
-                    output.append(line[:-1] + ' BAD INPUT LINE')
-                    continue
-                # put date and lat/long into dict
-                request_dict = get_request_dict(parts)
-                # calculate data
-                result_dict = get_decl(request_dict)
-                # format and append results
-                output.append(format_output(request_dict, result_dict))
-            else:
-                output.append(line[:-1])
-    all_output = '\n'.join(output)
-    with open(args['--output'], 'w') as outfile:
-        outfile.write(all_output)
+    args = docopt(__doc__, version = VERSION)
+    print(args)
+    output = ("   DATE    Latit   Longit    grid    decDate" + 
+                "  decLat  decLong  Decl  gridDec" +
+                get_output(args) + '\n')
+    if args["--outfile"]:
+        with open(args['--outfile'], 'w') as outfile:
+            outfile.write(output)
+    else:
+#       print(output)
+        with sys.stdout as outfile:
+            outfile.write(output)
+    
+
 
 if __name__ == '__main__':  # code block to run the application
-    print("Running Python3 script: 'declination.py'.......")
     main()
-
 
 
