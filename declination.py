@@ -28,8 +28,9 @@ Usage:
 Options:
     -h --help  Print usage statement.
     --version  Print version.
-    -i INFILE --infile=INFILE   Input file
-    -o OUTFILE --outfile=OUTFILE   Output file
+    -i INFILE --infile=INFILE   Input file (defaults to stdin)
+    -o OUTFILE --outfile=OUTFILE   Output file (defaults to stdout)
+    --noheader  Provide output without header line.
 
 This is being done in a virtual environment with Python 3.
 Non standard libraries used: 'docopt' and 'requests':
@@ -44,8 +45,12 @@ import requests
 VERSION = "0.0.0"
 # other constants
 COMMENT_INDICATOR = '#'
-SITE = (  # If this changes, line_array2dict() 
-          # will likely need to be changed.
+SITE = (  # If this changes, 
+        # line_array2query_dict(),
+        # response_array2dict(),
+        # response2dict(),
+        # the output formating
+        # and possibly the HEADER will likely need to be changed.
 "http://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination")
 # global variables
 n_FIELDS = 8  # With 7 fields, could get the declination.
@@ -53,32 +58,40 @@ n_FIELDS = 8  # With 7 fields, could get the declination.
               # which is needed to calculate declination re grid.
 test_line = (
 "2015 08 28  63 375  96 15  -2.46")
+HEADER = (
+    "DATE       Latit   Longit    grid  | " +
+    "decDate  decLat  decLong  Decl  gridDec")
 
 # custom exception types
 # private functions and classes
 # public functions and classes
 
-def line2array(line):
-    """Takes a line of input and tries to return a dictionary.
+def line2array(line, n_fields = 0):
+    """Takes a line of input and returns an array of words.
     Returns None if line is a comment line.
-    Returns an error string if format can not be interpreted.
+    Returns an error string if n_fields is set, and length of the
+    array is less than n_fields.  No objection is raised if it is
+    longer.
     """
     stripped_line = line.strip()
     if stripped_line:
         if stripped_line[0] == COMMENT_INDICATOR:
             return
         parts = stripped_line.split()
-        if len(parts) < n_FIELDS:
-            return 'Error: Bad input line.'
+        if n_fields and (len(parts) < n_FIELDS):
+            return 'Error: Bad input line- not enough entries.'
         return parts
 
-def line_array2dict(line_array):
+def line_array2query_dict(line_array):
     """Parameter is an array of items from an input line.
     If successful, returns a dictionary containing keys needed by the
-    request to be sent to SITE as well as those needed to format the
-    output, otherwise returns an error string.
-    The parameter is expected to be generated from an input
-    line by the client function (line2dict.)"""
+    request to be sent to SITE as well as keys needed to format the
+    output; 
+    If there are not enought entries in line_array, an error string
+    is returned.
+    The parameter is typically generated from an input line by the
+    client function line2array.
+    """
     try:
         ret = dict(
              lat_d = line_array[3],  # Latitude degrees
@@ -87,15 +100,15 @@ def line_array2dict(line_array):
              lon_m = line_array[6],  # Longitude minutes
              grid_offset = float(line_array[7]),
              # The following are used to format the http request.
+             startYear = line_array[0],
+             startMonth = line_array[1],
+             startDay = line_array[2],
              lat1 = float(line_array[3]) + float(line_array[4])/60,
              lon1 = float(line_array[5]) + float(line_array[6])/60,
              lat1Hemisphere='N',
              lon1Hemisphere='W',
              ajaz='true',
              resultFormat='csv',
-             startYear = line_array[0],
-             startDay = line_array[2],
-             startMonth = line_array[1],
              grid='on'
               )
     except ValueError:
@@ -106,7 +119,7 @@ def line_array2dict(line_array):
 def response_array2dict(response_array):            
     """<response_array> is an array created by spliting the relevant
     line of output coming from the website.
-    Returns a suitable dictionary."""
+    Returns a dictionary customized for use in output formatting."""
     return dict(   
             decimal_year=float(response_array[0]),
             latitude=float(response_array[1]),
@@ -118,13 +131,17 @@ def response_array2dict(response_array):
             )
 
 def response2dict(response):
+    """Specific for response coming from SITE: returns a dictionary.
+    """
     lines = response.split('\n')
     data_line = lines[-2]
     data = data_line.split(',')
     return response_array2dict(data)
 
-def processed_line(in_dict, out_dict):
-    """Desired output is of the form:
+def processed_line(in_dict, site_dict):
+    """First parameter is a dictionary derived from input.
+    Second parameter is a dict derived from SITE's response.
+    Desired output is of the form:
 2015 08 01  64 12  95 45  2.02 | 2015.xxx  64.xx 95.xx  x.xx | x.xx
  ^    ^  ^   ^  ^   ^  ^   ^      ^         ^     ^       ^      ^
 year mo day  ^  ^   ^  ^   ^      ^         ^     ^       ^      ^
@@ -144,30 +161,30 @@ year mo day  ^  ^   ^  ^   ^      ^         ^     ^       ^      ^
 "{1[decimal_year]:.3f} {1[latitude]:>6.3f}\N{Degree sign}",
 "{1[longitude]:>6.3f}\N{Degree sign}",
 "{1[declination]:.3f} {2:.3f}\N{Degree sign}",))
-        .format(in_dict, out_dict,
-                out_dict['declination'] - in_dict['grid_offset']))
+        .format(in_dict, site_dict,
+                site_dict['declination'] - in_dict['grid_offset']))
 
 def process_inputfile_object(input_file_object, output_array):
     """First parameter is a file object which can be read.
     The second param is a collector of ouput lines.
     """
     for line in input_file_object:
-        line_array = line2array(line)
+        line_array = line2array(line, n_FIELDS)
         if (line_array == None            # Comment line.
         or isinstance(line_array, str)):  # Error report.
             if line_array:              
                 output_array.append(
                 # Adding a line to announce the error report.
                 "#! The following line is malformed:")
-            output_array.append(line[:-1]) # Reported either way.
+            output_array.append(line[:-1]) # Inclued line in output.
         elif isinstance(line_array, list):
             # Data to process
-            source_dict = line_array2dict(line_array)
+            source_dict = line_array2query_dict(line_array)
             retrieved_dict = get_response_dict(source_dict) 
             output_line = processed_line(source_dict, retrieved_dict)
             output_array.append(output_line)
         else:
-            print("DEAD CODE BEING RUN!")
+            print("DEAD CODE BEING RUN! Contact code maintenance.")
             sys.exit(1)
 
 def get_response_dict(source_dict):
@@ -178,27 +195,34 @@ def get_response_dict(source_dict):
     return response2dict(r.text)
 
 def test():
-    line_array = line2array(test_line)
-    payload = line_array2dict(line_array)
+    """Tests one line (test_line) of input."""
+    line_array = line2array(test_line, n_FIELDS)
+    payload = line_array2query_dict(line_array)
     if isinstance(payload, dict):
         r = requests.get(SITE, params=payload)
-        print(r.url)
-        print(r.text)
+        response_dict = response2dict(r.text)
+        print("URL is '{}'.".format(r.url))
+        print("Response is :\n{}\nEND of RESPONSE".format(r.text))
         print("Response is of type {}.".format(type(r.text)))
-        print(response2dict(r.text))
+        print("Response as a dictionary is: {}"
+                                .format(response_dict))
     elif isinstance(payload,str):
         # An error is being reported:
         print(payload)
     elif payload == None:
         print("'payload' is a comment.")
     else:
-        print("This should be dead code.")
+        print("DEAD CODE BEING RUN! Contact code maintenance.")
+    print("Next 2 lines are header and the ouput:")
+    print(HEADER)
+    print(processed_line(payload, response_dict))
 
 def get_output(args):
-    """Parameter is output of docopt's interpretation of the
-    commandline parameters.  Output is a single string.
-    This function reads from the input file, gets declination
-    from the web and then generates the output.
+    """This function reads from the input file, gets declination
+    from the web and then generates the output as a single string.
+    Parameter is output of docopt's interpretation of the
+    commandline parameters.  It provides the source for input and
+    where to send output.
     """
     output_array = []
     if args["--infile"]:
@@ -211,22 +235,19 @@ def get_output(args):
 
 # main function
 def main():
+    global HEADER
     args = docopt(__doc__, version = VERSION)
-    print(args)
-    output = ("   DATE    Latit   Longit    grid    decDate" + 
-                "  decLat  decLong  Decl  gridDec" +
-                get_output(args) + '\n')
+#   print(args)
+    if args["--noheader"]:
+        HEADER = ''
+    output =  HEADER + get_output(args)
     if args["--outfile"]:
         with open(args['--outfile'], 'w') as outfile:
             outfile.write(output)
     else:
-#       print(output)
-        with sys.stdout as outfile:
-            outfile.write(output)
+        print(output)
     
 
 
 if __name__ == '__main__':  # code block to run the application
     main()
-
-
